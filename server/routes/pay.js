@@ -5,17 +5,28 @@ import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { createCheckout, verifyResponseHash, wipayCredentials, formatTotal } from '../wipay.js';
 import { queueInvoiceEvent } from '../webhooks.js';
+import { invoicePage, messagePage } from '../views/payPage.js';
 
 export const payRouter = Router();
 
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+// These pages hold a private link: don't cache them, leak them in the Referer, or allow framing
+payRouter.use((req, res, next) => {
+  res.set({
+    'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+  });
+  next();
+});
 
-// Simple placeholder page (the proper customer portal comes in a later step)
-function page(res, status, title, message) {
-  res.status(status).type('html').send(`<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title>
-<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:15vh auto;padding:0 16px;text-align:center;color:#222}h1{font-size:1.4rem}</style>
-</head><body><h1>${esc(title)}</h1><p>${esc(message)}</p></body></html>`);
+function page(res, status, title, message, merchantName) {
+  res.status(status).type('html').send(messagePage(title, message, merchantName));
+}
+
+// Sends the customer to their invoice page with a result banner
+function toInvoice(res, publicId, result) {
+  res.redirect(303, `/pay/${encodeURIComponent(publicId)}?result=${result}`);
 }
 
 // Our reference for each payment attempt: letters/numbers only, 16 chars (WiPay's limit)
@@ -48,7 +59,7 @@ payRouter.get('/return', async (req, res) => {
 
   // Already handled (e.g. customer refreshed the page): don't process twice
   if (row.payment_status === 'success') {
-    return row.return_url ? backToSite(res, row, 'paid') : page(res, 200, 'Payment received', `Invoice ${row.number} is paid. Thank you!`);
+    return row.return_url ? backToSite(res, row, 'paid') : toInvoice(res, row.public_id, 'paid');
   }
 
   if (status === 'success') {
@@ -61,7 +72,7 @@ payRouter.get('/return', async (req, res) => {
     if (!valid) {
       console.warn(`Payment ${order_id}: success response FAILED hash check, not marking paid`);
       await pool.query('UPDATE payments SET gateway_response = $2 WHERE id = $1', [row.payment_id, req.query]);
-      return page(res, 400, 'Payment could not be verified', 'We could not confirm this payment. If you were charged, please contact us with your receipt.');
+      return toInvoice(res, row.public_id, 'unverified');
     }
 
     let newlyPaid = false;
@@ -94,7 +105,7 @@ payRouter.get('/return', async (req, res) => {
         console.error(`Could not queue webhook for ${row.number}:`, err.message)
       );
     }
-    return row.return_url ? backToSite(res, row, 'paid') : page(res, 200, 'Payment received', `Invoice ${row.number} is paid. Thank you!`);
+    return row.return_url ? backToSite(res, row, 'paid') : toInvoice(res, row.public_id, 'paid');
   }
 
   // failed / error / anything else
@@ -105,27 +116,46 @@ payRouter.get('/return', async (req, res) => {
   );
   console.log(`Payment ${order_id}: ${status} ${message || ''}`);
   if (row.return_url) return backToSite(res, row, 'failed');
-  return page(res, 200, 'Payment not completed', 'Your payment did not go through. You can go back and try again.');
+  return toInvoice(res, row.public_id, 'failed');
 });
 
-// The customer's pay link: creates a payment attempt and sends them to WiPay's checkout
-payRouter.get('/:publicId', async (req, res) => {
+async function loadInvoice(publicId) {
   const { rows } = await pool.query(
     `SELECT i.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone,
-            m.id AS m_id, m.country_code, m.currency AS m_currency, m.wipay_environment, m.fee_structure,
+            m.id AS m_id, m.name AS merchant_name, m.country_code, m.wipay_environment, m.fee_structure,
             m.wipay_account_number, m.wipay_api_key_enc, m.is_active AS merchant_active
        FROM invoices i
        JOIN merchants m ON m.id = i.merchant_id
        LEFT JOIN customers c ON c.id = i.customer_id
       WHERE i.public_id = $1`,
-    [req.params.publicId]
+    [publicId]
   );
-  if (!rows.length) return page(res, 404, 'Invoice not found', 'This payment link is not valid.');
-  const inv = rows[0];
+  return rows[0];
+}
 
-  if (inv.status === 'paid') return page(res, 200, 'Already paid', `Invoice ${inv.number} has already been paid. Thank you!`);
-  if (inv.status !== 'open' || !inv.merchant_active) return page(res, 410, 'Invoice unavailable', 'This invoice can no longer be paid. Please contact the business.');
-  if (!inv.customer_email) return page(res, 400, 'Missing email', 'This invoice has no customer email, which is needed to pay by card.');
+const RESULTS = new Set(['paid', 'failed', 'unverified']);
+
+// The customer's pay link: shows the invoice and a Pay button.
+// Opening it does nothing else, so WhatsApp/email link previews can't start payments.
+payRouter.get('/:publicId', async (req, res) => {
+  const inv = await loadInvoice(req.params.publicId);
+  if (!inv) return page(res, 404, 'Invoice not found', 'This payment link is not valid. Please check the link or contact the business.');
+  if (inv.status !== 'paid' && (inv.status !== 'open' || !inv.merchant_active)) {
+    return page(res, 410, 'Invoice unavailable', 'This invoice can no longer be paid. Please contact the business.', inv.merchant_name);
+  }
+  const result = RESULTS.has(req.query.result) ? req.query.result : undefined;
+  res.type('html').send(invoicePage(inv, result));
+});
+
+// Pressing "Pay": creates a payment attempt and sends the customer to WiPay's checkout
+payRouter.post('/:publicId/checkout', async (req, res) => {
+  const inv = await loadInvoice(req.params.publicId);
+  if (!inv) return page(res, 404, 'Invoice not found', 'This payment link is not valid. Please check the link or contact the business.');
+  if (inv.status === 'paid') return toInvoice(res, inv.public_id, 'paid');
+  if (inv.status !== 'open' || !inv.merchant_active) {
+    return page(res, 410, 'Invoice unavailable', 'This invoice can no longer be paid. Please contact the business.', inv.merchant_name);
+  }
+  if (!inv.customer_email) return page(res, 400, 'Missing email', 'This invoice has no customer email, which is needed to pay by card.', inv.merchant_name);
 
   const orderId = newOrderId();
   const { rows: [payment] } = await pool.query(
@@ -159,6 +189,6 @@ payRouter.get('/:publicId', async (req, res) => {
       `UPDATE payments SET status = 'failed', gateway_response = $2, completed_at = NOW() WHERE id = $1`,
       [payment.id, { error: err.message }]
     );
-    page(res, 502, 'Payment unavailable', 'We could not start the payment right now. Please try again in a few minutes.');
+    page(res, 502, 'Payment unavailable', 'We could not start the payment right now. Please try again in a few minutes.', inv.merchant_name);
   }
 });
