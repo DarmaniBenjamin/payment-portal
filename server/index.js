@@ -4,6 +4,7 @@ import './crypto.js'; // checks ENCRYPTION_KEY at startup
 import { requireSiteKey } from './middleware/requireSiteKey.js';
 import { invoicesRouter } from './routes/invoices.js';
 import { payRouter } from './routes/pay.js';
+import { adminRouter } from './routes/admin.js';
 import { startWebhookWorker } from './webhooks.js';
 
 if (!process.env.PUBLIC_URL) {
@@ -40,6 +41,7 @@ app.get('/api/v1/me', requireSiteKey, (req, res) => {
 
 app.use('/api/v1/invoices', invoicesRouter);
 app.use('/pay', payRouter);
+app.use('/admin', adminRouter);
 
 // Anything else under /api that doesn't exist
 app.use('/api', (req, res) => {
