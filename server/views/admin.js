@@ -60,7 +60,7 @@ td a.inv{font-weight:600;text-decoration:none;color:var(--text)}
 fieldset{border:0;padding:0;margin:0 0 6px}legend{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:10px}
 .alert{border-radius:10px;padding:11px 14px;margin-bottom:16px;font-size:14px}
 .alert.bad{background:var(--bad-bg);color:var(--bad-text)}.alert.ok{background:var(--ok-bg);color:var(--ok-text)}.alert.warn{background:var(--warn-bg);color:var(--warn-text)}
-.detail{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);grid-template-areas:'main side' 'attempts side';gap:16px;align-items:start}
+.detail{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);grid-template-areas:'main side' 'attempts side';grid-template-rows:auto 1fr;gap:16px;align-items:start}
 .d-main{grid-area:main}.d-side{grid-area:side}.d-attempts{grid-area:attempts}
 .amount{font-size:32px;font-weight:700;letter-spacing:-.02em;margin:4px 0}
 dl{margin:16px 0 0;border-top:1px solid var(--line)}
@@ -90,6 +90,10 @@ select{appearance:auto}
 .site-actions .btn{padding:7px 12px;font-size:13px}
 code.key{display:block;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all;margin:4px 0 12px}
 .danger-zone{border-color:var(--bad-bg)}
+.support-bar{background:var(--warn-bg);color:var(--warn-text);border-bottom:1px solid var(--line);font-size:14px}
+.support-bar .bar{padding:8px 16px}.support-bar span{margin-right:auto}
+.support-bar .btn{padding:6px 12px;font-size:13px;color:var(--warn-text);border-color:currentColor}
+.linkrow{text-align:center;margin-top:14px;font-size:14px}
 @media (max-width:760px){
   .bar{gap:8px 12px}
   .logout{margin-left:auto}
@@ -111,7 +115,7 @@ code.key{display:block;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace
   table.list tr.row:hover{background:var(--accent-soft)}
 }`;
 
-function page(title, body) {
+export function page(title, body) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -123,10 +127,16 @@ function page(title, body) {
 
 export function shell(title, ctx, active, body) {
   const envNote = ctx.merchant.environment === 'sandbox' ? '<small>Test mode (sandbox)</small>' : '';
-  return page(`${title} - ${ctx.merchant.name}`, `
+  const platformLink = ctx.homeMerchant?.is_platform && !ctx.support
+    ? `<a href="/admin/platform" class="${active === 'platform' ? 'on' : ''}">Platform</a>` : '';
+  const banner = ctx.support ? `<div class="support-bar" role="status"><div class="bar">
+<span><strong>Support access:</strong> you are in ${esc(ctx.support.merchantName)}'s account as ${esc(ctx.admin.name)}. Every action is recorded in their access history.</span>
+<form class="allow" method="post" action="/admin/support/exit"><input type="hidden" name="_csrf" value="${esc(ctx.csrf)}"><button class="btn ghost" type="submit">Exit account</button></form>
+</div></div>` : '';
+  return page(`${title} - ${ctx.merchant.name}`, `${banner}
 <header><div class="bar">
 <div class="brand">${esc(ctx.merchant.name)}${envNote}</div>
-<nav><a href="/admin" class="${active === 'invoices' ? 'on' : ''}">Invoices</a>
+<nav>${platformLink}<a href="/admin" class="${active === 'invoices' ? 'on' : ''}">Invoices</a>
 <a href="/admin/invoices/new" class="${active === 'new' ? 'on' : ''}">New invoice</a>
 <a href="/admin/settings" class="${active === 'settings' ? 'on' : ''}">Settings</a></nav>
 <form class="logout" method="post" action="/admin/logout"><input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">
@@ -146,7 +156,8 @@ ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
 <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required value="${esc(email)}" ${email ? '' : 'autofocus'}></div>
 <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required ${email ? 'autofocus' : ''}></div>
 <button class="btn block" type="submit">Log in</button>
-</form></div></div>`);
+</form></div>
+<p class="linkrow"><a href="/admin/forgot">Forgot password?</a></p></div>`);
 }
 
 export function dashboardPage(ctx, { invoices, totals, status, q, pageNo, hasMore }) {
@@ -278,4 +289,8 @@ b.addEventListener('click',function(){var done=function(){b.textContent='Copied'
 if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(i.value).then(done,function(){i.select();document.execCommand('copy');done()})}
 else{i.select();document.execCommand('copy');done()}})})();
 </script>`);
+}
+
+export function messagePage(ctx, title, message) {
+  return shell(title, ctx, '', `<div class="card" style="max-width:520px"><h1 style="margin-bottom:6px">${esc(title)}</h1><p class="muted" style="margin:0">${esc(message)}</p></div>`);
 }

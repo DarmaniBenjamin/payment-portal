@@ -20,7 +20,7 @@ const FEES = [
 const TYPES = { wordpress: 'WordPress', static: 'Website (static)', app: 'App / other' };
 
 // errors: { section: message } so each form shows its own error
-export function settingsPage(ctx, { m, sites, notice, errors = {}, values = {} }) {
+export function settingsPage(ctx, { m, sites, access = [], notice, errors = {}, values = {} }) {
   const n = NOTICES[notice];
   const err = (section) => (errors[section] ? `<div class="alert bad" role="alert">${esc(errors[section])}</div>` : '');
   const csrf = `<input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">`;
@@ -54,7 +54,7 @@ ${n ? `<div class="alert ${n[0]}" role="status">${esc(n[1])}</div>` : ''}
 
 <section class="card" id="payments">
 <h2>Payments (WiPay)</h2>
-<p class="lead">Where card payments go. Changes here need your current password.</p>
+<p class="lead">Where card payments go. Changes here need ${ctx.support ? 'your own (staff) password, and the client is emailed' : 'your current password'}.</p>
 ${err('payments')}
 <form method="post" action="/admin/settings/payments">${csrf}
 <div class="row2">
@@ -116,7 +116,17 @@ ${err('business')}
 <button class="btn" type="submit">Save business details</button>
 </form></section>
 
-<section class="card" id="password">
+<section class="card" id="access">
+<h2>Access history</h2>
+<p class="lead">Every time the platform team opened or changed this account. This list can’t be edited or deleted by anyone.</p>
+${access.length ? `<div style="overflow-x:auto"><table><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>${access.map((a) => `<tr>
+<td class="small" style="white-space:nowrap">${esc(fmtDateTime(a.created_at))}</td>
+<td class="small">${esc(a.actor_name)}<div class="muted">${esc(a.actor_email)}</div></td>
+<td class="small">${esc(a.action)}${a.reason ? `<div class="muted">Reason: ${esc(a.reason)}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+  : '<p class="small muted" style="margin:0">No access by the platform team yet.</p>'}
+</section>
+
+${ctx.support ? '' : `<section class="card" id="password">
 <h2>Your password</h2>
 <p class="lead">Signed in as ${esc(ctx.admin.email)}. Changing it logs out your other devices.</p>
 ${err('password')}
@@ -128,7 +138,7 @@ ${err('password')}
 <div class="field"><label for="new_pw2">Repeat new password</label><input id="new_pw2" name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></div>
 </div>
 <button class="btn" type="submit">Change password</button>
-</form></section>
+</form></section>`}
 
 </div>`);
 }

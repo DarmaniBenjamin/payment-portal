@@ -13,13 +13,15 @@
     "mock:wipay": "node server/dev/mock-wipay.js",
     "site:webhook": "node --env-file=.env server/scripts/set-webhook.js",
     "mock:receiver": "node server/dev/webhook-receiver.js",
-    "admin:create": "node --env-file=.env server/scripts/create-admin.js"
+    "admin:create": "node --env-file=.env server/scripts/create-admin.js",
+    "platform:set": "node --env-file=.env server/scripts/set-platform.js"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
     "express": "^5.3.0",
+    "nodemailer": "^10.3.1",
     "pg": "^8.23.1"
   }
 }

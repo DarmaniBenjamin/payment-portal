@@ -64,17 +64,19 @@ export async function endSession(req, res) {
   res.clearCookie(COOKIE, { path: '/admin' });
 }
 
-// Lets the request through only if it has a valid session; loads the admin and their business
+// Lets the request through only if it has a valid session; loads the admin and their business.
+// If a platform login has opened a client's account (support access), req.merchant is the client.
 export async function requireAdmin(req, res, next) {
   const token = readCookie(req, COOKIE);
   if (!token) return res.redirect(303, '/admin/login');
   const { rows } = await pool.query(
-    `SELECT s.csrf_token, a.id, a.name, a.email,
-            m.id AS merchant_id, m.name AS merchant_name, m.currency, m.fee_structure, m.wipay_environment
+    `SELECT s.id AS session_id, s.csrf_token, s.acting_merchant_id, s.acting_until > NOW() AS acting_valid,
+            a.id, a.name, a.email,
+            m.id AS merchant_id, m.name AS merchant_name, m.currency, m.fee_structure, m.wipay_environment, m.is_platform
        FROM admin_sessions s
        JOIN admins a ON a.id = s.admin_id
        JOIN merchants m ON m.id = a.merchant_id
-      WHERE s.token_hash = $1 AND s.expires_at > NOW() AND a.is_active AND m.is_active`,
+      WHERE s.token_hash = $1 AND s.expires_at > NOW() AND a.is_active AND m.is_active AND a.password_hash IS NOT NULL`,
     [sha256(token)]
   );
   if (!rows.length) {
@@ -83,9 +85,25 @@ export async function requireAdmin(req, res, next) {
   }
   const r = rows[0];
   req.admin = { id: r.id, name: r.name, email: r.email };
+  req.homeMerchant = { id: r.merchant_id, name: r.merchant_name, is_platform: r.is_platform };
   req.merchant = { id: r.merchant_id, name: r.merchant_name, currency: r.currency, fee_structure: r.fee_structure, environment: r.wipay_environment };
   req.csrf = r.csrf_token;
+  req.sessionId = r.session_id;
   req.sessionTokenHash = sha256(token);
+  req.support = null;
+
+  if (r.acting_merchant_id && r.is_platform) {
+    const { rows: [client] } = r.acting_valid
+      ? await pool.query('SELECT id, name, currency, fee_structure, wipay_environment FROM merchants WHERE id = $1 AND NOT is_platform', [r.acting_merchant_id])
+      : { rows: [] };
+    if (client) {
+      req.merchant = { id: client.id, name: client.name, currency: client.currency, fee_structure: client.fee_structure, environment: client.wipay_environment };
+      req.support = { merchantId: client.id, merchantName: client.name };
+    } else {
+      // Support access ran out (1 hour): back to the platform's own account
+      await pool.query('UPDATE admin_sessions SET acting_merchant_id = NULL, acting_until = NULL WHERE id = $1', [r.session_id]);
+    }
+  }
   next();
 }
 
@@ -121,3 +139,42 @@ export function recordFailedLogin(ip) {
   else a.count++;
 }
 export const clearFailedLogins = (ip) => attempts.delete(ip);
+
+// ---- One-time links for invites and password resets ----
+export async function createAdminToken(adminId, purpose, hours) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await pool.query("DELETE FROM admin_tokens WHERE admin_id = $1 AND purpose = $2 AND used_at IS NULL", [adminId, purpose]);
+  await pool.query(
+    'INSERT INTO admin_tokens (admin_id, purpose, token_hash, expires_at) VALUES ($1, $2, $3, NOW() + make_interval(hours => $4))',
+    [adminId, purpose, sha256(token), hours]
+  );
+  return token;
+}
+
+// Returns the admin a valid, unused link belongs to (or null). Does not use it up.
+export async function findAdminToken(token) {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 100) return null;
+  const { rows } = await pool.query(
+    `SELECT t.id AS token_id, t.purpose, a.id, a.name, a.email
+       FROM admin_tokens t JOIN admins a ON a.id = t.admin_id JOIN merchants m ON m.id = a.merchant_id
+      WHERE t.token_hash = $1 AND t.used_at IS NULL AND t.expires_at > NOW() AND a.is_active AND m.is_active`,
+    [sha256(token)]
+  );
+  return rows[0] || null;
+}
+
+// Sets the password from a link, uses up all of that admin's links, and logs out their other devices
+export async function setPasswordFromToken(tokenRow, password) {
+  await pool.query('UPDATE admins SET password_hash = $2 WHERE id = $1', [tokenRow.id, await hashPassword(password)]);
+  await pool.query('UPDATE admin_tokens SET used_at = NOW() WHERE admin_id = $1 AND used_at IS NULL', [tokenRow.id]);
+  await pool.query('DELETE FROM admin_sessions WHERE admin_id = $1', [tokenRow.id]);
+}
+
+// Simple password rules shared by every place a password is chosen. Returns an error or null.
+export function passwordProblem(pw, confirm) {
+  pw = String(pw || '');
+  if (pw.length < 12) return 'The password must be at least 12 characters.';
+  if (pw.length > 200) return 'The password is too long.';
+  if (pw !== String(confirm || '')) return 'The two passwords don\u2019t match.';
+  return null;
+}

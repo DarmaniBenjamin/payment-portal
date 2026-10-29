@@ -6,6 +6,7 @@ import { invoicesRouter } from './routes/invoices.js';
 import { payRouter } from './routes/pay.js';
 import { adminRouter } from './routes/admin.js';
 import { startWebhookWorker } from './webhooks.js';
+import { startEmailWorker } from './mailer.js';
 
 if (!process.env.PUBLIC_URL) {
   console.error('PUBLIC_URL is not set. Add it to .env (e.g. PUBLIC_URL=http://localhost:4000)');
@@ -58,4 +59,5 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`Payment service running on http://localhost:${PORT}`);
   startWebhookWorker();
+  startEmailWorker();
 });

@@ -3,9 +3,10 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { encrypt, generateApiKey, randomSecret } from '../crypto.js';
-import { verifyPassword, hashPassword, endOtherSessions } from '../auth.js';
+import { verifyPassword, hashPassword, endOtherSessions, passwordProblem } from '../auth.js';
 import { checkWebhookUrl, checkSiteUrl, SITE_TYPES } from '../services/sites.js';
 import { settingsPage, siteKeyPage } from '../views/settings.js';
+import { recentAccess, notifyClient, nowText } from '../services/access.js';
 
 export const settingsRouter = Router();
 
@@ -36,8 +37,8 @@ async function loadSites(merchantId) {
 
 // Shows the settings page again with one form's error (and what they typed)
 async function showWithError(req, res, section, message, typed = {}) {
-  const [m, sites] = await Promise.all([loadMerchant(req.merchant.id), loadSites(req.merchant.id)]);
-  html(res, settingsPage(req, { m, sites, errors: { [section]: message }, values: { [section]: typed } }), 400);
+  const [m, sites, access] = await Promise.all([loadMerchant(req.merchant.id), loadSites(req.merchant.id), recentAccess(req.merchant.id)]);
+  html(res, settingsPage(req, { m, sites, access, errors: { [section]: message }, values: { [section]: typed } }), 400);
 }
 
 const done = (res, notice, anchor) => res.redirect(303, `/admin/settings?notice=${notice}#${anchor}`);
@@ -48,8 +49,8 @@ async function passwordOk(adminId, password) {
 }
 
 settingsRouter.get('/', async (req, res) => {
-  const [m, sites] = await Promise.all([loadMerchant(req.merchant.id), loadSites(req.merchant.id)]);
-  html(res, settingsPage(req, { m, sites, notice: typeof req.query.notice === 'string' ? req.query.notice : undefined }));
+  const [m, sites, access] = await Promise.all([loadMerchant(req.merchant.id), loadSites(req.merchant.id), recentAccess(req.merchant.id)]);
+  html(res, settingsPage(req, { m, sites, access, notice: typeof req.query.notice === 'string' ? req.query.notice : undefined }));
 });
 
 // ---- Business ----
@@ -101,6 +102,11 @@ settingsRouter.post('/payments', async (req, res) => {
     [req.merchant.id, account || null, apiKey ? encrypt(apiKey) : null, environment, fee, currency]
   );
   console.log(`Admin ${req.admin.email} updated payment settings (${environment}${apiKey ? ', new API key' : ''})`);
+  if (req.support) {
+    // Where the client's money goes: always tell them when the platform changes it
+    await notifyClient(req.merchant.id, `Your WiPay payment settings were changed`,
+      `${req.admin.name} <${req.admin.email}> from ${req.homeMerchant.name} changed the WiPay payment settings on your ${req.merchant.name} account on ${nowText()}.\n\nMode: ${environment === 'live' ? 'Live' : 'Test mode'}\nWiPay account number: ${account || '(none, test account)'}${apiKey ? '\nA new WiPay API key was saved.' : ''}\n\nIf you didn't expect this, contact ${req.homeMerchant.name} straight away.`);
+  }
   done(res, 'payments', 'payments');
 });
 
@@ -128,6 +134,7 @@ settingsRouter.post('/sites', async (req, res) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name`,
     [req.merchant.id, name, type, site.url, prefix, hash, hook.url, encrypt(webhookSecret)]
   );
+  res.locals.auditDetail = created.name;
   console.log(`Admin ${req.admin.email} connected site "${name}" (id ${created.id})`);
   // Shown once, straight from this response; nothing is stored that could show it again
   html(res, siteKeyPage(req, { site: created, apiKey: key, webhookSecret }));
@@ -139,6 +146,7 @@ settingsRouter.post('/sites/:id/webhook', async (req, res) => {
   const hook = checkWebhookUrl(req.body.webhook_url);
   if (hook.error) return showWithError(req, res, `site${s.id}`, hook.error, req.body);
   await pool.query('UPDATE sites SET webhook_url = $2 WHERE id = $1', [s.id, hook.url]);
+  res.locals.auditDetail = s.name;
   done(res, 'site-webhook', 'sites');
 });
 
@@ -146,6 +154,7 @@ settingsRouter.post('/sites/:id/toggle', async (req, res) => {
   const s = await ownSite(req.merchant.id, req.params.id);
   if (!s) return res.redirect(303, '/admin/settings#sites');
   await pool.query('UPDATE sites SET is_active = NOT is_active WHERE id = $1', [s.id]);
+  res.locals.auditDetail = `${s.is_active ? 'off' : 'on'} site ${s.name}`;
   console.log(`Admin ${req.admin.email} turned ${s.is_active ? 'off' : 'on'} site "${s.name}"`);
   done(res, s.is_active ? 'site-off' : 'site-on', 'sites');
 });
@@ -155,6 +164,7 @@ settingsRouter.post('/sites/:id/rotate', async (req, res) => {
   if (!s) return res.redirect(303, '/admin/settings#sites');
   const { key, prefix, hash } = generateApiKey();
   await pool.query('UPDATE sites SET api_key_prefix = $2, api_key_hash = $3 WHERE id = $1', [s.id, prefix, hash]);
+  res.locals.auditDetail = s.name;
   console.log(`Admin ${req.admin.email} replaced the API key for site "${s.name}"`);
   html(res, siteKeyPage(req, { site: s, apiKey: key, replaced: true }));
 });
@@ -166,9 +176,8 @@ settingsRouter.post('/password', async (req, res) => {
     return showWithError(req, res, 'password', 'Your current password is wrong.');
   }
   const pw = String(new_password || '');
-  if (pw.length < 12) return showWithError(req, res, 'password', 'The new password must be at least 12 characters.');
-  if (pw.length > 200) return showWithError(req, res, 'password', 'The new password is too long.');
-  if (pw !== String(confirm_password || '')) return showWithError(req, res, 'password', 'The two new passwords don’t match.');
+  const problem = passwordProblem(pw, confirm_password);
+  if (problem) return showWithError(req, res, 'password', problem.replace('The password', 'The new password'));
   if (pw === String(current_password)) return showWithError(req, res, 'password', 'Choose a password different from your current one.');
 
   await pool.query('UPDATE admins SET password_hash = $2 WHERE id = $1', [req.admin.id, await hashPassword(pw)]);

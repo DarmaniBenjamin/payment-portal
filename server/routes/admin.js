@@ -6,9 +6,14 @@ import { validateInvoiceInput, createInvoice } from '../services/invoices.js';
 import {
   verifyPassword, dummyVerify, startSession, endSession, requireAdmin, checkCsrf,
   loginBlocked, recordFailedLogin, clearFailedLogins,
+  createAdminToken, findAdminToken, setPasswordFromToken, passwordProblem,
 } from '../auth.js';
-import { loginPage, dashboardPage, newInvoicePage, invoiceDetailPage } from '../views/admin.js';
+import { queueEmail } from '../mailer.js';
+import { logAccess } from '../services/access.js';
+import { loginPage, dashboardPage, newInvoicePage, invoiceDetailPage, messagePage } from '../views/admin.js';
+import { forgotPage, forgotSentPage, setPasswordPage, linkInvalidPage } from '../views/account.js';
 import { settingsRouter } from './settings.js';
+import { platformRouter } from './platform.js';
 
 export const adminRouter = Router();
 
@@ -54,15 +59,105 @@ adminRouter.post('/login', async (req, res) => {
   res.redirect(303, '/admin');
 });
 
+// ---- Forgot password / set password from an emailed link ----
+adminRouter.get('/forgot', (req, res) => html(res, forgotPage()));
+
+adminRouter.post('/forgot', async (req, res) => {
+  const ip = req.ip;
+  const email = String(req.body.email || '').trim();
+  if (loginBlocked(ip)) return html(res, forgotPage({ error: 'Too many attempts. Wait 15 minutes and try again.', email }), 429);
+  recordFailedLogin(ip); // counts toward the same limit, so this can't be used to spam people
+  const { rows } = await pool.query(
+    `SELECT a.id, a.name, a.email FROM admins a JOIN merchants m ON m.id = a.merchant_id
+      WHERE LOWER(a.email) = LOWER($1) AND a.is_active AND m.is_active AND a.password_hash IS NOT NULL`,
+    [email]
+  );
+  if (rows.length) {
+    const token = await createAdminToken(rows[0].id, 'reset', 1);
+    const base = process.env.PUBLIC_URL.replace(/\/$/, '');
+    await queueEmail({
+      to: rows[0].email,
+      subject: 'Choose a new password for your payment portal',
+      body: `Hi ${rows[0].name},\n\nSomeone (hopefully you) asked to reset your payment portal password.\n\nChoose a new password here (the link works once and expires in 1 hour):\n${base}/admin/set-password?token=${token}\n\nIf you didn't ask for this, ignore this email; your password stays the same.`,
+    });
+  }
+  // Same answer whether or not the email has a login, so this can't be used to find accounts
+  html(res, forgotSentPage());
+});
+
+adminRouter.get('/set-password', async (req, res) => {
+  const who = await findAdminToken(req.query.token);
+  if (!who) return html(res, linkInvalidPage(), 410);
+  html(res, setPasswordPage({ token: req.query.token, who, purpose: who.purpose }));
+});
+
+adminRouter.post('/set-password', async (req, res) => {
+  const who = await findAdminToken(req.body.token);
+  if (!who) return html(res, linkInvalidPage(), 410);
+  const problem = passwordProblem(req.body.password, req.body.confirm);
+  if (problem) return html(res, setPasswordPage({ token: req.body.token, who, purpose: who.purpose, error: problem }), 400);
+  await setPasswordFromToken(who, req.body.password);
+  console.log(`${who.email} set a password (${who.purpose})`);
+  await startSession(res, who.id);
+  res.redirect(303, '/admin');
+});
+
 // Everything below needs a logged-in admin, and every form POST needs the CSRF token
 adminRouter.use(requireAdmin, checkCsrf);
 
+// While a platform login is inside a client's account: block changing the client's own
+// password, and record every successful change in the client's access history.
+// [path, description, needs a detail from the handler (no detail = nothing actually changed)]
+const AUDIT = [
+  [/^\/invoices$/, (d) => `Created invoice ${d}`, true],
+  [/^\/invoices\/[^/]+\/cancel$/, (d) => `Cancelled invoice ${d}`, true],
+  [/^\/settings\/payments$/, () => 'Changed WiPay payment settings', false],
+  [/^\/settings\/business$/, () => 'Changed business details', false],
+  [/^\/settings\/sites$/, (d) => `Connected a new site: ${d}`, true],
+  [/^\/settings\/sites\/\d+\/webhook$/, (d) => `Changed the webhook URL for ${d}`, true],
+  [/^\/settings\/sites\/\d+\/toggle$/, (d) => `Turned ${d}`, true],
+  [/^\/settings\/sites\/\d+\/rotate$/, (d) => `Replaced the API key for ${d}`, true],
+];
+
+adminRouter.use((req, res, next) => {
+  if (!req.support || req.method !== 'POST') return next();
+  if (req.path === '/settings/password') {
+    return html(res, messagePage(req, 'Not allowed', 'The client\u2019s own password can only be changed by them.'), 403);
+  }
+  if (req.path === '/support/exit' || req.path === '/logout') return next();
+  const path = req.path; // read now: sub-routers change req.path while handling the request
+  res.on('finish', () => {
+    if (res.statusCode >= 400) return;
+    const rule = AUDIT.find(([re]) => re.test(path));
+    const detail = res.locals.auditDetail;
+    if (rule && rule[2] && !detail) return;
+    const action = rule ? rule[1](detail) : `Made a change (${path})`;
+    logAccess({ merchantId: req.support.merchantId, actor: req.admin, action, ip: req.ip })
+      .catch((err) => console.error('Could not write access log:', err.message));
+  });
+  next();
+});
+
+async function leaveSupport(req) {
+  if (!req.support) return;
+  await pool.query('UPDATE admin_sessions SET acting_merchant_id = NULL, acting_until = NULL WHERE id = $1', [req.sessionId]);
+  await logAccess({ merchantId: req.support.merchantId, actor: req.admin, action: 'Left the account', ip: req.ip });
+}
+
+adminRouter.post('/support/exit', async (req, res) => {
+  const id = req.support?.merchantId;
+  await leaveSupport(req);
+  res.redirect(303, id ? `/admin/platform/businesses/${id}` : '/admin');
+});
+
 adminRouter.post('/logout', async (req, res) => {
+  await leaveSupport(req);
   await endSession(req, res);
   res.redirect(303, '/admin/login');
 });
 
 adminRouter.use('/settings', settingsRouter);
+adminRouter.use('/platform', platformRouter);
 
 // ---- Invoices list ----
 const PAGE_SIZE = 50;
@@ -136,6 +231,7 @@ adminRouter.post('/invoices', async (req, res) => {
   }
 
   const invoice = await createInvoice({ merchantId: req.merchant.id, currency: req.merchant.currency, input });
+  res.locals.auditDetail = invoice.number;
   console.log(`Admin ${req.admin.email} created invoice ${invoice.number}`);
   res.redirect(303, `/admin/invoices/${invoice.public_id}?notice=created`);
 });
@@ -167,11 +263,12 @@ adminRouter.get('/invoices/:id', async (req, res) => {
 });
 
 adminRouter.post('/invoices/:id/cancel', async (req, res) => {
-  const { rowCount } = await pool.query(
+  const { rowCount, rows } = await pool.query(
     `UPDATE invoices SET status = 'cancelled', updated_at = NOW()
-      WHERE public_id = $1 AND merchant_id = $2 AND status = 'open'`,
+      WHERE public_id = $1 AND merchant_id = $2 AND status = 'open' RETURNING number`,
     [req.params.id, req.merchant.id]
   );
+  if (rowCount) res.locals.auditDetail = rows[0].number;
   if (rowCount) console.log(`Admin ${req.admin.email} cancelled invoice ${req.params.id}`);
   res.redirect(303, `/admin/invoices/${encodeURIComponent(req.params.id)}?notice=${rowCount ? 'cancelled' : 'cannot-cancel'}`);
 });
