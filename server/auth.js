@@ -85,7 +85,13 @@ export async function requireAdmin(req, res, next) {
   req.admin = { id: r.id, name: r.name, email: r.email };
   req.merchant = { id: r.merchant_id, name: r.merchant_name, currency: r.currency, fee_structure: r.fee_structure, environment: r.wipay_environment };
   req.csrf = r.csrf_token;
+  req.sessionTokenHash = sha256(token);
   next();
+}
+
+// After a password change: log out every other device, keep this one
+export async function endOtherSessions(adminId, keepTokenHash) {
+  await pool.query('DELETE FROM admin_sessions WHERE admin_id = $1 AND token_hash <> $2', [adminId, keepTokenHash]);
 }
 
 // Every form in the dashboard includes the session's CSRF token; reject POSTs without it

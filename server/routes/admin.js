@@ -8,6 +8,7 @@ import {
   loginBlocked, recordFailedLogin, clearFailedLogins,
 } from '../auth.js';
 import { loginPage, dashboardPage, newInvoicePage, invoiceDetailPage } from '../views/admin.js';
+import { settingsRouter } from './settings.js';
 
 export const adminRouter = Router();
 
@@ -60,6 +61,8 @@ adminRouter.post('/logout', async (req, res) => {
   await endSession(req, res);
   res.redirect(303, '/admin/login');
 });
+
+adminRouter.use('/settings', settingsRouter);
 
 // ---- Invoices list ----
 const PAGE_SIZE = 50;

@@ -4,7 +4,7 @@ import { esc, money } from './payPage.js';
 const dateFmt = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeZone: 'America/Grenada' });
 const dateTimeFmt = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'America/Grenada' });
 const fmtDate = (d) => (d ? dateFmt.format(new Date(d)) : '');
-const fmtDateTime = (d) => (d ? dateTimeFmt.format(new Date(d)) : '');
+export const fmtDateTime = (d) => (d ? dateTimeFmt.format(new Date(d)) : '');
 
 const CSS = `
 :root{--bg:#f4f5f7;--card:#fff;--text:#1c1f24;--muted:#5f6670;--line:#e3e6ea;--accent:#0f6e5c;--accent-hover:#0b5748;--accent-soft:#e6f2ef;
@@ -74,6 +74,22 @@ dt{color:var(--muted)}dd{margin:0;text-align:right;word-break:break-word}
 .login h1{text-align:center;font-size:20px;margin-bottom:4px}.login p.sub{text-align:center;color:var(--muted);margin:0 0 20px}
 .logout button{background:none;border:0;color:var(--muted);font:inherit;cursor:pointer;padding:6px 8px;border-radius:8px}
 .logout button:hover{background:var(--accent-soft);color:var(--text)}
+.settings{display:grid;gap:16px;max-width:760px}
+.settings h2{font-size:17px;margin:0 0 4px}.settings .lead{margin:0 0 16px;color:var(--muted);font-size:14px}
+select{appearance:auto}
+.radio{display:flex;flex-direction:column;gap:8px}
+.radio label{display:flex;gap:10px;align-items:flex-start;font-weight:400;border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer}
+.radio label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.radio input{width:auto;margin-top:3px}
+.radio small{display:block;color:var(--muted);font-size:12px}
+.site{border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px}
+.site-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.site-name{font-weight:600}.site-meta{font-size:13px;color:var(--muted)}
+.site-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.site-actions form{display:flex;gap:6px;flex:1 1 260px}
+.site-actions .btn{padding:7px 12px;font-size:13px}
+code.key{display:block;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all;margin:4px 0 12px}
+.danger-zone{border-color:var(--bad-bg)}
 @media (max-width:760px){
   .bar{gap:8px 12px}
   .logout{margin-left:auto}
@@ -105,20 +121,21 @@ function page(title, body) {
 </head><body>${body}</body></html>`;
 }
 
-function shell(title, ctx, active, body) {
+export function shell(title, ctx, active, body) {
   const envNote = ctx.merchant.environment === 'sandbox' ? '<small>Test mode (sandbox)</small>' : '';
   return page(`${title} - ${ctx.merchant.name}`, `
 <header><div class="bar">
 <div class="brand">${esc(ctx.merchant.name)}${envNote}</div>
 <nav><a href="/admin" class="${active === 'invoices' ? 'on' : ''}">Invoices</a>
-<a href="/admin/invoices/new" class="${active === 'new' ? 'on' : ''}">New invoice</a></nav>
+<a href="/admin/invoices/new" class="${active === 'new' ? 'on' : ''}">New invoice</a>
+<a href="/admin/settings" class="${active === 'settings' ? 'on' : ''}">Settings</a></nav>
 <form class="logout" method="post" action="/admin/logout"><input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">
 <button type="submit" title="Signed in as ${esc(ctx.admin.email)}">Log out</button></form>
 </div></header>
 <div class="wrap">${body}</div>`);
 }
 
-const badge = (status) => `<span class="badge b-${esc(status)}">${esc(status[0].toUpperCase() + status.slice(1))}</span>`;
+export const badge = (status) => `<span class="badge b-${esc(status)}">${esc(status[0].toUpperCase() + status.slice(1))}</span>`;
 
 export function loginPage({ error, email = '' } = {}) {
   return page('Log in', `<div class="login">

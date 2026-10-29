@@ -4,6 +4,7 @@
 // npm run site:webhook -- --site-id 1 --clear
 import { parseArgs } from 'node:util';
 import { pool } from '../db.js';
+import { checkWebhookUrl } from '../services/sites.js';
 
 const { values } = parseArgs({
   options: {
@@ -19,17 +20,10 @@ if (!values['site-id'] || !/^\d+$/.test(values['site-id']) || (!values.url && !v
   process.exit(1);
 }
 
-let url = null;
-if (!values.clear) {
-  try {
-    const u = new URL(values.url);
-    const local = ['localhost', '127.0.0.1'].includes(u.hostname);
-    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) throw new Error();
-    url = u.toString();
-  } catch {
-    console.error('--url must be a full https:// URL (http:// is only allowed for localhost testing)');
-    process.exit(1);
-  }
+const { url, error } = values.clear ? { url: null } : checkWebhookUrl(values.url);
+if (error) {
+  console.error(error);
+  process.exit(1);
 }
 
 try {
