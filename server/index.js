@@ -1,5 +1,7 @@
+import './preflight.js'; // must stay first: checks settings before anything else loads
 import express from 'express';
 import { pool } from './db.js';
+import { runMigrations } from './migrations.js';
 import './crypto.js'; // checks ENCRYPTION_KEY at startup
 import { requireSiteKey } from './middleware/requireSiteKey.js';
 import { invoicesRouter } from './routes/invoices.js';
@@ -8,15 +10,21 @@ import { adminRouter } from './routes/admin.js';
 import { startWebhookWorker } from './webhooks.js';
 import { startEmailWorker } from './mailer.js';
 
-if (!process.env.PUBLIC_URL) {
-  console.error('PUBLIC_URL is not set. Add it to .env (e.g. PUBLIC_URL=http://localhost:4000)');
-  process.exit(1);
-}
-
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
+const HTTPS = process.env.PUBLIC_URL.startsWith('https://');
+
+// Behind a hosting proxy (SiteGround), trust it to tell us the visitor's real IP address,
+// so login limits block the attacker, not everyone. TRUST_PROXY = number of proxies in front.
+const trustProxy = process.env.TRUST_PROXY ?? (process.env.NODE_ENV === 'production' ? '1' : '');
+if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
 
 app.disable('x-powered-by');
+app.use((req, res, next) => {
+  // Browsers only ever use https for this site once they've seen it (1 year)
+  if (HTTPS) res.set('Strict-Transport-Security', 'max-age=31536000');
+  next();
+});
 app.use(express.json({ limit: '100kb' }));
 
 // Root: simple message so visiting the base URL doesn't show "Cannot GET /"
@@ -56,8 +64,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Server error' });
 });
 
+// Bring the database up to date before taking any requests
+try {
+  await runMigrations();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
 app.listen(PORT, () => {
-  console.log(`Payment service running on http://localhost:${PORT}`);
+  console.log(`Payment service running on port ${PORT} (${process.env.PUBLIC_URL})`);
   startWebhookWorker();
   startEmailWorker();
 });

@@ -34,3 +34,23 @@ ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
 export function linkInvalidPage() {
   return box('Link not valid', '', `<p style="margin:0">This link has expired or was already used. You can <a href="/admin/forgot">request a new one</a>, or ask the platform team to resend your invite.</p>`);
 }
+
+// One-time setup on a new server: creates the platform business and its first login
+export function setupPage({ token, values = {}, error }) {
+  const v = (k) => esc(values[k] ?? '');
+  return box('First-time setup', 'Creates the platform account (e.g. Protonic) and your login. This page switches itself off afterwards.', `
+${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
+<form method="post" action="/admin/setup">
+<input type="hidden" name="token" value="${esc(token)}">
+<div class="field"><label for="biz">Platform business name</label><input id="biz" name="business_name" maxlength="80" required value="${v('business_name')}" placeholder="e.g. Protonic Solutions"></div>
+<div class="field"><label for="bizmail">Business email</label><input id="bizmail" name="business_email" type="email" maxlength="80" required value="${v('business_email')}"></div>
+<div class="field"><label for="name">Your name</label><input id="name" name="name" maxlength="60" required value="${v('name')}"></div>
+<div class="field"><label for="email">Your login email</label><input id="email" name="email" type="email" autocomplete="username" maxlength="80" required value="${v('email')}"></div>
+<div class="field"><label for="pw">Password</label><input id="pw" name="password" type="password" autocomplete="new-password" minlength="12" required><div class="hint">At least 12 characters</div></div>
+<div class="field"><label for="pw2">Repeat password</label><input id="pw2" name="confirm" type="password" autocomplete="new-password" minlength="12" required></div>
+<button class="btn block" type="submit">Create platform account</button></form>`);
+}
+
+export function setupClosedPage(reason) {
+  return box('Setup not available', '', `<p style="margin:0">${esc(reason)}</p>`);
+}

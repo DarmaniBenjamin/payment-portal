@@ -1,17 +1,18 @@
 // Admin dashboard: log in, list invoices, create invoices, share pay links, cancel invoices.
 import express, { Router } from 'express';
+import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { payUrl } from '../serializers.js';
 import { validateInvoiceInput, createInvoice } from '../services/invoices.js';
 import {
   verifyPassword, dummyVerify, startSession, endSession, requireAdmin, checkCsrf,
   loginBlocked, recordFailedLogin, clearFailedLogins,
-  createAdminToken, findAdminToken, setPasswordFromToken, passwordProblem,
+  createAdminToken, findAdminToken, setPasswordFromToken, passwordProblem, hashPassword,
 } from '../auth.js';
 import { queueEmail } from '../mailer.js';
 import { logAccess } from '../services/access.js';
 import { loginPage, dashboardPage, newInvoicePage, invoiceDetailPage, messagePage } from '../views/admin.js';
-import { forgotPage, forgotSentPage, setPasswordPage, linkInvalidPage } from '../views/account.js';
+import { forgotPage, forgotSentPage, setPasswordPage, linkInvalidPage, setupPage, setupClosedPage } from '../views/account.js';
 import { settingsRouter } from './settings.js';
 import { platformRouter } from './platform.js';
 
@@ -99,6 +100,73 @@ adminRouter.post('/set-password', async (req, res) => {
   await setPasswordFromToken(who, req.body.password);
   console.log(`${who.email} set a password (${who.purpose})`);
   await startSession(res, who.id);
+  res.redirect(303, '/admin');
+});
+
+// ---- First-time setup on a new server ----
+// Only works while there are no logins at all, and only with the SETUP_TOKEN from the server's settings.
+async function setupBlocked(token) {
+  const expected = process.env.SETUP_TOKEN || '';
+  if (expected.length < 24) return 'Setup is switched off. To use it, set a SETUP_TOKEN of at least 24 characters in the server settings.';
+  const a = Buffer.from(String(token || '')), b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return 'This setup link is not valid.';
+  const { rows: [{ n }] } = await pool.query('SELECT COUNT(*)::int AS n FROM admins');
+  if (n > 0) return 'Setup is already done. Log in instead, and remove SETUP_TOKEN from the server settings.';
+  return null;
+}
+
+adminRouter.get('/setup', async (req, res) => {
+  const blocked = await setupBlocked(req.query.token);
+  if (blocked) return html(res, setupClosedPage(blocked), 404);
+  html(res, setupPage({ token: req.query.token }));
+});
+
+adminRouter.post('/setup', async (req, res) => {
+  const f = req.body;
+  if (loginBlocked(req.ip)) return html(res, setupClosedPage('Too many attempts. Wait 15 minutes and try again.'), 429);
+  const blocked = await setupBlocked(f.token);
+  if (blocked) {
+    recordFailedLogin(req.ip);
+    return html(res, setupClosedPage(blocked), 404);
+  }
+  const t = (k) => (typeof f[k] === 'string' ? f[k].trim() : '');
+  const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const fail = (error) => html(res, setupPage({ token: f.token, values: f, error }), 400);
+  if (!t('business_name') || t('business_name').length > 80) return fail('Enter the platform business name.');
+  if (!EMAIL.test(t('business_email'))) return fail('Enter a valid business email.');
+  if (!t('name') || t('name').length > 60) return fail('Enter your name.');
+  if (!EMAIL.test(t('email'))) return fail('Enter a valid login email.');
+  const problem = passwordProblem(f.password, f.confirm);
+  if (problem) return fail(problem);
+
+  const client = await pool.connect();
+  let adminId;
+  try {
+    await client.query('BEGIN');
+    await client.query('LOCK TABLE admins IN EXCLUSIVE MODE'); // two setup clicks at once can't both win
+    const { rows: [{ n }] } = await client.query('SELECT COUNT(*)::int AS n FROM admins');
+    if (n > 0) {
+      await client.query('ROLLBACK');
+      return html(res, setupClosedPage('Setup is already done. Log in instead.'), 404);
+    }
+    await client.query('UPDATE merchants SET is_platform = FALSE WHERE is_platform');
+    const { rows: [m] } = await client.query(
+      'INSERT INTO merchants (name, email, is_platform) VALUES ($1, $2, TRUE) RETURNING id',
+      [t('business_name'), t('business_email')]
+    );
+    ({ rows: [{ id: adminId }] } = await client.query(
+      'INSERT INTO admins (merchant_id, name, email, password_hash) VALUES ($1, $2, $3, $4) RETURNING id',
+      [m.id, t('name'), t('email'), await hashPassword(f.password)]
+    ));
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+  console.log(`First-time setup done: platform "${t('business_name')}", login ${t('email')}. Remove SETUP_TOKEN now.`);
+  await startSession(res, adminId);
   res.redirect(303, '/admin');
 });
 

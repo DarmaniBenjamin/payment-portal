@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch --env-file=.env server/index.js",
-    "start": "node --env-file=.env server/index.js",
+    "dev": "node --watch --env-file-if-exists=.env server/index.js",
+    "start": "node --env-file-if-exists=.env server/index.js",
     "db:migrate": "node --env-file=.env server/migrate.js",
     "gen:key": "node server/scripts/gen-key.js",
     "site:create": "node --env-file=.env server/scripts/create-site.js",
@@ -17,11 +17,12 @@
     "platform:set": "node --env-file=.env server/scripts/set-platform.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "dependencies": {
     "express": "^5.3.0",
     "nodemailer": "^10.3.1",
     "pg": "^8.23.1"
-  }
+  },
+  "main": "server/index.js"
 }
