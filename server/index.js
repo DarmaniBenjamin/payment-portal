@@ -7,6 +7,11 @@ const PORT = Number(process.env.PORT) || 4000;
 app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
 
+// Root: simple message so visiting the base URL doesn't show "Cannot GET /"
+app.get('/', (req, res) => {
+  res.type('text').send('Payment service is running. Health check: /api/health');
+});
+
 // Health check: confirms the service is running and can reach the database
 app.get('/api/health', async (req, res) => {
   try {
