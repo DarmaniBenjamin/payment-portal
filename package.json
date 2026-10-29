@@ -10,7 +10,9 @@
     "gen:key": "node server/scripts/gen-key.js",
     "site:create": "node --env-file=.env server/scripts/create-site.js",
     "merchant:wipay": "node --env-file=.env server/scripts/set-wipay.js",
-    "mock:wipay": "node server/dev/mock-wipay.js"
+    "mock:wipay": "node server/dev/mock-wipay.js",
+    "site:webhook": "node --env-file=.env server/scripts/set-webhook.js",
+    "mock:receiver": "node server/dev/webhook-receiver.js"
   },
   "engines": {
     "node": ">=22"

@@ -3,31 +3,12 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { requireSiteKey } from '../middleware/requireSiteKey.js';
+import { invoiceJson } from '../serializers.js';
 
 export const invoicesRouter = Router();
 invoicesRouter.use(requireSiteKey);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function payUrl(publicId) {
-  return `${process.env.PUBLIC_URL.replace(/\/$/, '')}/pay/${publicId}`;
-}
-
-function invoiceJson(row) {
-  return {
-    id: row.public_id,
-    number: row.number,
-    description: row.description,
-    amount: row.amount,
-    currency: row.currency,
-    status: row.status,
-    external_ref: row.external_ref,
-    due_date: row.due_date,
-    paid_at: row.paid_at,
-    created_at: row.created_at,
-    pay_url: payUrl(row.public_id),
-  };
-}
 
 // Returns an error message, or null if the request body is fine
 function validate(body) {

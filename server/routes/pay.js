@@ -4,6 +4,7 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { createCheckout, verifyResponseHash, wipayCredentials, formatTotal } from '../wipay.js';
+import { queueInvoiceEvent } from '../webhooks.js';
 
 export const payRouter = Router();
 
@@ -63,6 +64,7 @@ payRouter.get('/return', async (req, res) => {
       return page(res, 400, 'Payment could not be verified', 'We could not confirm this payment. If you were charged, please contact us with your receipt.');
     }
 
+    let newlyPaid = false;
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -71,12 +73,13 @@ payRouter.get('/return', async (req, res) => {
           WHERE id = $1 AND status <> 'success'`,
         [row.payment_id, transaction_id, req.query]
       );
-      await client.query(
+      const paid = await client.query(
         `UPDATE invoices SET status = 'paid', paid_at = NOW(), updated_at = NOW()
           WHERE id = $1 AND status <> 'paid'`,
         [row.id]
       );
       await client.query('COMMIT');
+      newlyPaid = paid.rowCount === 1;
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -84,6 +87,13 @@ payRouter.get('/return', async (req, res) => {
       client.release();
     }
     console.log(`Payment ${order_id}: success, invoice ${row.number} paid`);
+
+    // Tell the site that created the invoice (never blocks or breaks the customer's page)
+    if (newlyPaid) {
+      queueInvoiceEvent('invoice.paid', row.id).catch((err) =>
+        console.error(`Could not queue webhook for ${row.number}:`, err.message)
+      );
+    }
     return row.return_url ? backToSite(res, row, 'paid') : page(res, 200, 'Payment received', `Invoice ${row.number} is paid. Thank you!`);
   }
 
