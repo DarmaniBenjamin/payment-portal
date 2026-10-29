@@ -9,5 +9,6 @@ All rights reserved.
 
 1. Install packages: `npm install`
 2. Copy `.env.example` to `.env` and fill in your database details
-3. Start in dev mode: `npm run dev`
-4. Check it works: http://localhost:4000/api/health
+3. Create the database tables: `npm run db:migrate`
+4. Start in dev mode: `npm run dev`
+5. Check it works: http://localhost:4000/api/health
