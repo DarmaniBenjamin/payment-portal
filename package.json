@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "node --watch --env-file=.env server/index.js",
     "start": "node --env-file=.env server/index.js",
-    "db:migrate": "node --env-file=.env server/migrate.js"
+    "db:migrate": "node --env-file=.env server/migrate.js",
+    "gen:key": "node server/scripts/gen-key.js",
+    "site:create": "node --env-file=.env server/scripts/create-site.js",
+    "merchant:wipay": "node --env-file=.env server/scripts/set-wipay.js",
+    "mock:wipay": "node server/dev/mock-wipay.js"
   },
   "engines": {
     "node": ">=22"
